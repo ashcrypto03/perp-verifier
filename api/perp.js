@@ -1,5 +1,4 @@
 // api/perp.js
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Content-Type", "application/json");
@@ -13,11 +12,11 @@ export default async function handler(req, res) {
   const contract = "0xC01a5c5f1a2a70eC6a461447651452C53B78846b".toLowerCase();
   const cutoffMs = new Date("2025-09-27T23:00:00Z").getTime();
 
-  const maxPages = 200;        // safety cap
+  const maxPages = 200;   // safety cap
   const pageSize = 100;
 
   let page = 1;
-  let earliest = null;         // { tsMs, timestamp, txHash, from, to, method }
+  let earliest = null;    // { tsMs, timestamp, tx }
 
   while (page <= maxPages) {
     const url =
@@ -34,33 +33,20 @@ export default async function handler(req, res) {
     const items = Array.isArray(data.items) ? data.items : [];
 
     for (const t of items) {
-      const ok =
-        (t.status === "ok" || t.result === "success") &&
-        !t.has_error_in_internal_transactions;
-
+      const ok = (t.status === "ok" || t.result === "success") &&
+                 !t.has_error_in_internal_transactions;
       const to = t.to?.hash?.toLowerCase();
       const from = t.from?.hash?.toLowerCase();
       const touchesPerp = to === contract || from === contract;
-
       if (!ok || !touchesPerp) continue;
 
       const tsMs = Date.parse(t.timestamp); // ISO → ms
-
-      // Keep the earliest (oldest) interaction with the Perp contract
       if (!earliest || tsMs < earliest.tsMs) {
-        earliest = {
-          tsMs,
-          timestamp: t.timestamp,
-          txHash: t.hash,
-          from: t.from?.hash,
-          to: t.to?.hash,
-          method: t.method,
-        };
+        earliest = { tsMs, timestamp: t.timestamp, tx: t.hash };
       }
     }
 
-    // last page if fewer than pageSize
-    if (items.length < pageSize) break;
+    if (items.length < pageSize) break; // last page
     page++;
   }
 
@@ -70,16 +56,6 @@ export default async function handler(req, res) {
   res.status(200).json({
     account: String(account).toLowerCase(),
     verified,
-    ...(hasTx
-      ? {
-          firstTx: {
-            timestamp: earliest.timestamp,
-            tx: earliest.txHash,
-            from: earliest.from,
-            to: earliest.to,
-            method: earliest.method,
-          },
-        }
-      : {}),
+    ...(hasTx ? { firstTx: { timestamp: earliest.timestamp, tx: earliest.tx } } : {})
   });
 }
