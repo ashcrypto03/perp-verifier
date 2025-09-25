@@ -11,15 +11,19 @@ export default async function handler(req, res) {
   }
 
   const contract = "0xC01a5c5f1a2a70eC6a461447651452C53B78846b".toLowerCase();
-  const cutoff = new Date("2025-09-27T23:00:00Z").getTime();
-  let page = 1;
+  const cutoffMs = new Date("2025-09-27T23:00:00Z").getTime();
+
+  const maxPages = 200;        // safety cap
   const pageSize = 100;
 
-  let verified = false;
-  let match = null;
+  let page = 1;
+  let earliest = null;         // { tsMs, timestamp, txHash, from, to, method }
 
-  while (page <= 50) {
-    const url = `https://explorer.testnet3.goat.network/api/v2/addresses/${account}/transactions?filter=to%20%7C%20from&page=${page}&items_count=${pageSize}`;
+  while (page <= maxPages) {
+    const url =
+      `https://explorer.testnet3.goat.network/api/v2/addresses/${account}` +
+      `/transactions?filter=to%20%7C%20from&page=${page}&items_count=${pageSize}`;
+
     const r = await fetch(url, { headers: { accept: "application/json" } });
     if (!r.ok) {
       res.status(502).json({ error: "Upstream API error", status: r.status });
@@ -27,28 +31,55 @@ export default async function handler(req, res) {
     }
 
     const data = await r.json();
-    const items = data.items || [];
+    const items = Array.isArray(data.items) ? data.items : [];
 
     for (const t of items) {
+      const ok =
+        (t.status === "ok" || t.result === "success") &&
+        !t.has_error_in_internal_transactions;
+
       const to = t.to?.hash?.toLowerCase();
       const from = t.from?.hash?.toLowerCase();
-      const ts = new Date(t.timestamp).getTime();
-      const ok = (t.status === "ok" || t.result === "success") && !t.has_error_in_internal_transactions;
+      const touchesPerp = to === contract || from === contract;
 
-      if (ok && (to === contract || from === contract) && ts <= cutoff) {
-        verified = true;
-        match = { txHash: t.hash, timestamp: t.timestamp };
-        break;
+      if (!ok || !touchesPerp) continue;
+
+      const tsMs = Date.parse(t.timestamp); // ISO → ms
+
+      // Keep the earliest (oldest) interaction with the Perp contract
+      if (!earliest || tsMs < earliest.tsMs) {
+        earliest = {
+          tsMs,
+          timestamp: t.timestamp,
+          txHash: t.hash,
+          from: t.from?.hash,
+          to: t.to?.hash,
+          method: t.method,
+        };
       }
     }
 
-    if (verified || items.length < pageSize) break;
+    // last page if fewer than pageSize
+    if (items.length < pageSize) break;
     page++;
   }
 
+  const hasTx = Boolean(earliest);
+  const verified = hasTx && earliest.tsMs <= cutoffMs;
+
   res.status(200).json({
-    account: account.toLowerCase(),
+    account: String(account).toLowerCase(),
     verified,
-    ...(match ? { timestamp: match.timestamp, tx: match.txHash } : {}),
+    ...(hasTx
+      ? {
+          firstTx: {
+            timestamp: earliest.timestamp,
+            tx: earliest.txHash,
+            from: earliest.from,
+            to: earliest.to,
+            method: earliest.method,
+          },
+        }
+      : {}),
   });
 }
